@@ -7,25 +7,51 @@ st.set_page_config(page_title="Retina Disease Detection", page_icon="👁️", l
 import numpy as np
 import cv2
 import sys
-import tensorflow as tf
 import os
 import time
-import gdown
-import pathlib
 
 # Debug information
 st.write(f"Python version: {sys.version}")
 st.write(f"Python executable: {sys.executable}")
 st.write(f"Current working directory: {os.getcwd()}")
 
-# First, properly import vit-keras to handle custom layers
+# Try to install required packages dynamically if not available
 try:
-    # Import the vit_keras package directly
+    import tensorflow as tf
+except ImportError:
+    st.warning("Installing TensorFlow...")
+    os.system("pip install tensorflow")
+    import tensorflow as tf
+
+try:
+    import gdown
+except ImportError:
+    st.warning("Installing gdown...")
+    os.system("pip install gdown")
+    import gdown
+
+# Handle vit-keras dependency more gracefully
+vit_keras_installed = False
+try:
+    # Try to import vit_keras
     from vit_keras import vit
+    vit_keras_installed = True
     st.sidebar.success("✅ vit-keras package loaded successfully")
 except ImportError:
-    st.error("vit-keras package not installed. Please run: pip install vit-keras tensorflow-addons")
-    st.stop()
+    # Try to install it
+    st.warning("vit-keras package not found. Attempting to install a compatible version...")
+    try:
+        # For Python 3.12 compatibility, try to install directly from the repository
+        install_cmd = "pip install git+https://github.com/faustomorales/vit-keras.git"
+        os.system(install_cmd)
+        try:
+            from vit_keras import vit
+            vit_keras_installed = True
+            st.sidebar.success("✅ vit-keras package installed successfully")
+        except ImportError as e:
+            st.error(f"Could not import vit-keras after installation attempt: {str(e)}")
+    except Exception as e:
+        st.error(f"Error installing vit-keras: {str(e)}")
 
 # Configuration
 IMG_SIZE = (224, 224)
@@ -47,7 +73,17 @@ def download_model_from_gdrive(model_url, output_path):
         # Download the file if it doesn't exist
         if not os.path.exists(output_path):
             with st.spinner(f"Downloading model from Google Drive... This may take a while."):
-                gdown.download(model_url, output_path, quiet=False)
+                # If direct download URL
+                if "uc?id=" in model_url:
+                    gdown.download(model_url, output_path, quiet=False)
+                # If it's a view/share URL
+                elif "drive.google.com" in model_url and "file/d/" in model_url:
+                    file_id = model_url.split("file/d/")[1].split("/")[0]
+                    direct_url = f"https://drive.google.com/uc?id={file_id}"
+                    gdown.download(direct_url, output_path, quiet=False)
+                else:
+                    st.error(f"Invalid Google Drive URL format: {model_url}")
+                    return False
             st.success(f"✅ Model downloaded successfully to {output_path}!")
         else:
             st.success(f"✅ Model already exists at {output_path}!")
@@ -291,13 +327,31 @@ if not os.path.exists(model_path) and not use_mock:
 if not use_mock and "model" not in st.session_state:
     with st.spinner("Loading model - this may take a moment..."):
         try:
-            # Register GELU activation if used in your model
-            tf.keras.utils.get_custom_objects()['gelu'] = tf.keras.activations.gelu
-            
             # Check if model file exists
             if os.path.exists(model_path):
-                # Load the model - vit_keras will handle the custom layers automatically
-                st.session_state.model = tf.keras.models.load_model(model_path)
+                # Load the model
+                # First try to register custom objects if they exist
+                try:
+                    tf.keras.utils.get_custom_objects()['gelu'] = tf.keras.activations.gelu
+                except:
+                    pass
+                
+                # Try to load the model, with fallback options
+                try:
+                    st.session_state.model = tf.keras.models.load_model(model_path)
+                except Exception as e1:
+                    st.warning(f"Standard loading failed: {str(e1)}. Trying alternative loading method...")
+                    try:
+                        # Try with custom_objects set to 'auto'
+                        st.session_state.model = tf.keras.models.load_model(
+                            model_path, 
+                            compile=False
+                        )
+                        st.success("Model loaded with compile=False")
+                    except Exception as e2:
+                        st.error(f"Alternative loading also failed: {str(e2)}")
+                        raise e2
+                
                 st.success(f"✅ Model loaded successfully from {model_path}!")
             else:
                 st.warning(f"Model file not found at {model_path}. Please download the model first.")
